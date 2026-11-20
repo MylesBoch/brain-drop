@@ -60,7 +60,11 @@ function add(cls, text) {
   return d;
 }
 function speak(text) {
-  try { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text.slice(0, 600)); u.rate = 1.05; speechSynthesis.speak(u); } catch (e) {}
+  try { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text.slice(0, 600));
+    const voices = speechSynthesis.getVoices().filter((v) => /^en/i.test(v.lang));
+    const deep = voices.find((v) => /male|guy|david|george|daniel|x-iom|x-tpd|x-iol/i.test(v.name) && !/female/i.test(v.name));
+    if (deep) u.voice = deep;
+    u.pitch = 0.6; u.rate = 1.0; speechSynthesis.speak(u); } catch (e) {}
 }
 async function call(action, payload) {
   const r = await fetch(API + action, { method: "POST", headers: { "Content-Type": "application/json", "x-arnold-key": key }, body: JSON.stringify(payload || {}) });
@@ -72,9 +76,9 @@ const WORKING = ["queued", "running"];
 async function watch(job, bubble, status) {
   const until = Date.now() + 16 * 60000;
   while (Date.now() < until) {
-    await new Promise((ok) => setTimeout(ok, status === "thinking" ? 1500 : 8000));
-    let j;
-    try { j = ((await call("status", { job })).jobs || [])[0]; } catch (e) { continue; }
+    let j;                                               // the server holds this call until the status changes
+    try { j = ((await call("status", { job, wait: status })).jobs || [])[0]; }
+    catch (e) { await new Promise((ok) => setTimeout(ok, 2000)); continue; }
     if (!j) return;
     if (j.status === status) continue;
     const was = status; status = j.status;
