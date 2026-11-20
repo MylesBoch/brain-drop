@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0f14">
+<title>ARNOLD</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100dvh; background: #0b0f14; color: #e8edf2; font: 16px/1.45 system-ui, sans-serif;
+         display: flex; flex-direction: column; padding: 16px; gap: 12px; }
+  h1 { font-size: 18px; letter-spacing: .25em; margin: 4px 0; color: #7fd4ff; }
+  #log { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+  .me, .arnold { padding: 10px 12px; border-radius: 12px; max-width: 92%; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .me { align-self: flex-end; background: #1c3a52; }
+  .arnold { align-self: flex-start; background: #161c24; border: 1px solid #263140; }
+  .state { font-size: 12px; color: #8fa3b5; }
+  #mic { width: 96px; height: 96px; border-radius: 50%; border: 2px solid #7fd4ff; background: #10202c; color: #7fd4ff;
+         font-size: 15px; align-self: center; }
+  #mic.on { background: #7fd4ff; color: #0b0f14; }
+  form { display: flex; gap: 8px; }
+  input { flex: 1; min-width: 0; padding: 12px; border-radius: 10px; border: 1px solid #263140; background: #10161d; color: inherit; font-size: 16px; }
+  button { padding: 12px 14px; border-radius: 10px; border: 1px solid #263140; background: #1a2430; color: inherit; font-size: 15px; }
+  #stop { border-color: #ff6b6b; color: #ff9c9c; }
+  .row { display: flex; gap: 8px; }
+  .row button { flex: 1; }
+</style>
+</head>
+<body>
+<h1>A.R.N.O.L.D.</h1>
+<div id="log"></div>
+<button id="mic" type="button">Talk</button>
+<form id="f"><input id="t" placeholder="or type a command" autocomplete="off"><button>Send</button></form>
+<div class="row">
+  <button id="status" type="button">Status</button>
+  <button id="approve" type="button">Approve</button>
+  <button id="stop" type="button">STOP</button>
+  <button id="pair" type="button">Pair</button>
+</div>
+<script>
+// ARNOLD phone/watch-browser client. Nothing secret is in this page: the pairing key is typed once and kept
+// only in this browser's storage on this device.
+const API = "https://dsvwhatfvhvmhvpzixfz.supabase.co/functions/v1/arnold/";
+const $ = (id) => document.getElementById(id);
+let key = "";
+try { key = localStorage.getItem("arnoldKey") || ""; } catch (e) {}
+// One-tap pairing: a link ending in #k=<key>. The part after # never leaves this device, and it is wiped at once.
+const fromLink = (location.hash.match(/^#k=([A-Za-z0-9_-]{32,})$/) || [])[1];
+if (fromLink) {
+  key = fromLink;
+  try { localStorage.setItem("arnoldKey", key); } catch (e) {}
+  history.replaceState(null, "", location.pathname);
+}
+
+function add(cls, text) {
+  const d = document.createElement("div");
+  d.className = cls; d.textContent = text;
+  $("log").appendChild(d); d.scrollIntoView({ block: "end" });
+  return d;
+}
+function speak(text) {
+  try { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text.slice(0, 600)); u.rate = 1.05; speechSynthesis.speak(u); } catch (e) {}
+}
+async function call(action, payload) {
+  const r = await fetch(API + action, { method: "POST", headers: { "Content-Type": "application/json", "x-arnold-key": key }, body: JSON.stringify(payload || {}) });
+  if (r.status === 401) throw new Error("Not paired. Tap Pair and enter this device's key.");
+  return r.json();
+}
+const WORKING = ["queued", "running"];
+// Follows one job: first the brain's answer (fast polling), then any laptop work it started (slow polling).
+async function watch(job, bubble, status) {
+  const until = Date.now() + 16 * 60000;
+  while (Date.now() < until) {
+    await new Promise((ok) => setTimeout(ok, status === "thinking" ? 1500 : 8000));
+    let j;
+    try { j = ((await call("status", { job })).jobs || [])[0]; } catch (e) { continue; }
+    if (!j) return;
+    if (j.status === status) continue;
+    const was = status; status = j.status;
+    if (was === "thinking") {                            // the brain answered
+      const reply = j.reply || "No reply.";
+      add("arnold", reply); speak(reply);
+      if (!WORKING.includes(status)) { bubble.remove(); return; }
+      bubble.textContent = "Laptop: " + status; continue;
+    }
+    bubble.textContent = "Laptop: " + status;
+    if (!WORKING.includes(status)) {
+      const text = (status === "done" ? "Done. " : "That " + status + ". ") + (j.reply || "");
+      add("arnold", text); speak(text); return;
+    }
+  }
+}
+async function send(text) {
+  text = text.trim(); if (!text) return;
+  add("me", text);
+  try {
+    const r = await call("command", { text });
+    if (r.status === "thinking") { watch(r.job, add("state", "Thinking..."), "thinking"); return; }
+    const reply = r.reply || r.error || "No reply.";
+    add("arnold", reply); speak(reply);
+    if (r.job && WORKING.includes(r.status)) watch(r.job, add("state", "Laptop: " + r.status), r.status);
+  } catch (e) { add("arnold", e.message); }
+}
+$("f").onsubmit = (e) => { e.preventDefault(); send($("t").value); $("t").value = ""; };
+$("status").onclick = () => send("status");
+$("approve").onclick = () => send("approve");
+$("stop").onclick = () => send("emergency stop");
+$("pair").onclick = () => {
+  const k = prompt("Paste this device's ARNOLD pairing key");
+  if (k) { key = k.trim(); try { localStorage.setItem("arnoldKey", key); } catch (e) {} add("state", "Paired on this device."); }
+};
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (!SR) { $("mic").textContent = "No mic"; $("mic").disabled = true; }
+else {
+  const rec = new SR(); rec.lang = "en-US"; rec.interimResults = false;
+  rec.onresult = (e) => send(e.results[0][0].transcript);
+  rec.onend = () => $("mic").classList.remove("on");
+  rec.onerror = (e) => add("state", "Mic: " + e.error);
+  $("mic").onclick = () => { try { speechSynthesis.cancel(); rec.start(); $("mic").classList.add("on"); } catch (e) {} };
+}
+if (!key) add("state", "Tap Pair to connect this device.");
+</script>
+</body>
+</html>
